@@ -10,6 +10,7 @@ go.work
 .idea/
 .vscode/
 *.iml
+.DS_Store
 
 *.key
 *.crt
@@ -22,5 +23,9 @@ go.work
 .env
 .env.local
 .env.*.local
+*.log
 
 agentHelper/
+
+tmp/
+*.tmp
