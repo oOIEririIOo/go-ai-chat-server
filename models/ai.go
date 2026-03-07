@@ -17,7 +17,7 @@ type AiRequest struct {
 	Model          string      `json:"model"`
 	Messages       []AiMessage `json:"messages"`
 	Stream         bool        `json:"stream"`
-	Tools          []Tool      `json:"tools,omitempty"`
+	EnableSearch   *bool       `json:"enable_search,omitempty"`
 	EnableThinking *bool       `json:"enable_thinking,omitempty"`
 }
 
@@ -41,10 +41,9 @@ type AiResponse struct {
 }
 
 type ChatStreamRequest struct {
-	SessionID             string      `json:"session_id"`
-	Messages              []AiMessage `json:"messages"`
-	Model                 string      `json:"model,omitempty"`
-	EnableWebSearch       bool        `json:"enable_web_search,omitempty"`
-	EnableThinking        bool        `json:"enable_thinking,omitempty"`
-	EnableCodeInterpreter bool        `json:"enable_code_interpreter,omitempty"`
+	SessionID      string      `json:"session_id"`
+	Messages       []AiMessage `json:"messages"`
+	Model          string      `json:"model,omitempty"`
+	Tools          []Tool      `json:"tools,omitempty"` // 接收前端传来的 tools 列表
+	EnableThinking bool        `json:"enable_thinking,omitempty"`
 }

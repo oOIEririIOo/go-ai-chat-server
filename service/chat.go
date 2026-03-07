@@ -2,6 +2,7 @@ package service
 
 import (
 	"ai-chat/models"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -58,15 +59,16 @@ func (s *ChatService) GetSession(sessionId uint) (*models.ChatSession, error) {
 }
 
 // SaveMessage 保存消息
-func (s *ChatService) SaveMessage(sessionId uint, role, content string) (*models.ChatMessage, error) {
+func (s *ChatService) SaveMessage(sessionId uint, role, content, reasoningContent string) (*models.ChatMessage, error) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 	message := &models.ChatMessage{
-		SessionID: sessionId,
-		Role:      role,
-		Content:   content,
-		Timestamp: time.Now().Unix(),
-		CreatedAt: now,
-		UpdatedAt: now,
+		SessionID:        sessionId,
+		Role:             role,
+		Content:          content,
+		ReasoningContent: reasoningContent,
+		Timestamp:        time.Now().Unix(),
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	if err := s.db.Create(message).Error; err != nil {
 		return nil, fmt.Errorf("保存消息失败: %v", err)
@@ -127,14 +129,14 @@ func (s *ChatService) DeleteAllSessions(userId uint) error {
 }
 
 // StreamChat 流式聊天
-func (s *ChatService) StreamChat(sessionId uint, messages []models.AiMessage, enableWebSearch, enableThinking, enableCodeInterpreter bool) (<-chan string, <-chan error) {
+func (s *ChatService) StreamChat(sessionId uint, messages []models.AiMessage, tools []models.Tool) (<-chan string, <-chan error) {
 	fmt.Printf("[ChatDebug] Service: 开始流式聊天，会话ID=%d\n", sessionId)
 
 	// 保存用户消息到数据库（最后一条消息是用户的新消息）
 	if len(messages) > 0 {
 		lastMessage := messages[len(messages)-1]
 		if lastMessage.Role == "user" {
-			_, err := s.SaveMessage(sessionId, "user", lastMessage.Content)
+			_, err := s.SaveMessage(sessionId, "user", lastMessage.Content, "")
 			if err != nil {
 				fmt.Printf("[ChatDebug] Service: 保存用户消息失败: %v\n", err)
 			} else {
@@ -143,7 +145,7 @@ func (s *ChatService) StreamChat(sessionId uint, messages []models.AiMessage, en
 		}
 	}
 
-	dataChan, errChan := s.aiService.SendStreamRequest(messages, enableWebSearch, enableThinking, enableCodeInterpreter)
+	dataChan, errChan := s.aiService.SendStreamRequest(messages, tools)
 
 	// 创建新的 channel 用于返回给调用者
 	outChan := make(chan string)
@@ -153,14 +155,18 @@ func (s *ChatService) StreamChat(sessionId uint, messages []models.AiMessage, en
 		defer close(outChan)
 		defer close(outErrChan)
 
-		var fullContent string
+		var lastResponse StreamResponse
 		for {
 			select {
 			case content, ok := <-dataChan:
 				if !ok {
 					dataChan = nil
 				} else {
-					fullContent = content
+					// 解析JSON获取最新的内容和思考内容
+					var resp StreamResponse
+					if err := json.Unmarshal([]byte(content), &resp); err == nil {
+						lastResponse = resp
+					}
 					outChan <- content
 				}
 			case err, ok := <-errChan:
@@ -176,14 +182,14 @@ func (s *ChatService) StreamChat(sessionId uint, messages []models.AiMessage, en
 			}
 		}
 
-		// 保存完整消息到数据库
-		if len(fullContent) > 0 {
-			_, err := s.SaveMessage(sessionId, "assistant", fullContent)
+		// 保存完整消息到数据库（使用解析后的content和reasoningContent）
+		if len(lastResponse.Content) > 0 {
+			_, err := s.SaveMessage(sessionId, "assistant", lastResponse.Content, lastResponse.ReasoningContent)
 			if err != nil {
 				fmt.Printf("[ChatDebug] Service: 保存AI消息失败: %v\n", err)
 			}
 			// 更新会话的最后一条消息
-			if err := s.UpdateSessionLastMessage(sessionId, fullContent); err != nil {
+			if err := s.UpdateSessionLastMessage(sessionId, lastResponse.Content); err != nil {
 				fmt.Printf("[ChatDebug] Service: 更新会话最后消息失败: %v\n", err)
 			}
 		}

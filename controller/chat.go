@@ -124,11 +124,9 @@ func (c *ChatController) GetSession(ctx *gin.Context) {
 
 // StreamChatRequest 流式聊天请求结构
 type StreamChatRequest struct {
-	SessionID             uint               `json:"session_id" binding:"required"`     // 会话ID
-	Messages              []models.AiMessage `json:"messages" binding:"required"`       // 消息列表
-	EnableWebSearch       bool               `json:"enable_web_search,omitempty"`       // 是否启用联网搜索
-	EnableThinking        bool               `json:"enable_thinking,omitempty"`         // 是否启用思考模式
-	EnableCodeInterpreter bool               `json:"enable_code_interpreter,omitempty"` // 是否启用代码解释器
+	SessionID uint               `json:"session_id" binding:"required"` // 会话ID
+	Messages  []models.AiMessage `json:"messages" binding:"required"`   // 消息列表
+	Tools     []models.Tool      `json:"tools,omitempty"`               // 工具列表（如 enable_search, enable_thinking, code_interpreter）
 	// 模型配置
 	ModelId string `json:"model_id" binding:"required"` // 模型 ID
 	ApiKey  string `json:"api_key" binding:"required"`  // API Key
@@ -151,12 +149,13 @@ func (c *ChatController) StreamChat(ctx *gin.Context) {
 
 	fmt.Printf("[ChatDebug] Controller: 开始流式聊天，会话ID=%d，消息数=%d，模型=%s\n", req.SessionID, len(req.Messages), req.ModelId)
 	fmt.Printf("[ChatDebug] Controller: BaseUrl=%s\n", req.BaseUrl)
+	fmt.Printf("[ChatDebug] Controller: Tools=%v\n", req.Tools)
 
 	// 动态创建 AiService
 	aiService := service.NewAiService(req.ApiKey, req.BaseUrl, req.ModelId)
 	chatService := service.NewChatService(c.db, aiService)
 
-	dataChan, errChan := chatService.StreamChat(req.SessionID, req.Messages, req.EnableWebSearch, req.EnableThinking, req.EnableCodeInterpreter)
+	dataChan, errChan := chatService.StreamChat(req.SessionID, req.Messages, req.Tools)
 
 	ctx.Header("Content-Type", "text/event-stream")
 	ctx.Header("Cache-Control", "no-cache")

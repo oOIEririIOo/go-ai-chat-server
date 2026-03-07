@@ -24,8 +24,15 @@ func NewAiService(apiKey, baseUrl, modelId string) *AiService {
 	}
 }
 
+// StreamResponse 流式响应结构
+type StreamResponse struct {
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content"`
+	IsReasoning      bool   `json:"is_reasoning"`
+}
+
 // SendStreamRequest 发送流式请求到AI服务
-func (s *AiService) SendStreamRequest(messages []models.AiMessage, enableWebSearch, enableThinking, enableCodeInterpreter bool) (<-chan string, <-chan error) {
+func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []models.Tool) (<-chan string, <-chan error) {
 	dataChan := make(chan string)
 	errChan := make(chan error)
 
@@ -33,29 +40,20 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, enableWebSear
 		defer close(dataChan)
 		defer close(errChan)
 
-		req := models.AiRequest{
-			Model:    s.ModelId,
-			Messages: messages,
-			Stream:   true,
+		// 构建基础请求体
+		reqMap := map[string]interface{}{
+			"model":    s.ModelId,
+			"messages": messages,
+			"stream":   true,
 		}
 
-		// 添加 tools
-		var tools []models.Tool
-		if enableWebSearch {
-			tools = append(tools, models.Tool{Type: "web_search"})
-		}
-		if enableCodeInterpreter {
-			tools = append(tools, models.Tool{Type: "code_interpreter"})
-		}
-		if len(tools) > 0 {
-			req.Tools = tools
+		// 解析 tools 列表，将字段名设为 true
+		for _, tool := range tools {
+			reqMap[tool.Type] = true
+			fmt.Printf("[AiDebug] 启用功能: %s = true\n", tool.Type)
 		}
 
-		// 禁用思考模式（前端暂不支持设置，默认禁用）
-		enableThinking := false
-		req.EnableThinking = &enableThinking
-
-		jsonData, err := json.Marshal(req)
+		jsonData, err := json.Marshal(reqMap)
 		if err != nil {
 			errChan <- fmt.Errorf("JSON 编码失败: %v", err)
 			return
@@ -94,7 +92,8 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, enableWebSear
 
 		reader := resp.Body
 		buf := make([]byte, 1024)
-		var buffer strings.Builder
+		var reasoningBuffer strings.Builder
+		var contentBuffer strings.Builder
 
 		for {
 			n, err := reader.Read(buf)
@@ -125,21 +124,36 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, enableWebSear
 					}
 
 					if len(streamResp.Choices) > 0 {
+						delta := streamResp.Choices[0].Delta
+
 						// 处理思考内容（reasoning_content）
-						if streamResp.Choices[0].Delta.ReasoningContent != "" {
-							// 保留原始内容（包括换行符），Controller 会处理 SSE 格式
-							reasoningContent := streamResp.Choices[0].Delta.ReasoningContent
-							buffer.WriteString(reasoningContent)
-							fmt.Printf("[AiDebug] 思考内容: %s\n", reasoningContent)
-							dataChan <- buffer.String()
+						if delta.ReasoningContent != "" {
+							reasoningBuffer.WriteString(delta.ReasoningContent)
+							fmt.Printf("[AiDebug] 思考内容: %s\n", delta.ReasoningContent)
+
+							// 构建响应：包含思考内容和空的内容
+							response := StreamResponse{
+								Content:          contentBuffer.String(),
+								ReasoningContent: reasoningBuffer.String(),
+								IsReasoning:      true,
+							}
+							respJson, _ := json.Marshal(response)
+							dataChan <- string(respJson)
 						}
+
 						// 处理正常内容
-						if streamResp.Choices[0].Delta.Content != "" {
-							// 保留原始内容（包括换行符），Controller 会处理 SSE 格式
-							content := streamResp.Choices[0].Delta.Content
-							buffer.WriteString(content)
-							fmt.Printf("[AiDebug] 正常内容: %s\n", content)
-							dataChan <- buffer.String()
+						if delta.Content != "" {
+							contentBuffer.WriteString(delta.Content)
+							fmt.Printf("[AiDebug] 正常内容: %s\n", delta.Content)
+
+							// 构建响应：包含内容和之前的思考内容
+							response := StreamResponse{
+								Content:          contentBuffer.String(),
+								ReasoningContent: reasoningBuffer.String(),
+								IsReasoning:      false,
+							}
+							respJson, _ := json.Marshal(response)
+							dataChan <- string(respJson)
 						}
 					}
 				}
