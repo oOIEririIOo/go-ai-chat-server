@@ -48,9 +48,19 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 		}
 
 		// 解析 tools 列表，将字段名设为 true
+		var hasThinking bool
 		for _, tool := range tools {
 			reqMap[tool.Type] = true
 			fmt.Printf("[AiDebug] 启用功能: %s = true\n", tool.Type)
+			if tool.Type == "enable_thinking" {
+				hasThinking = true
+			}
+		}
+
+		// 如果没有思考模式，默认设置为 false
+		if !hasThinking {
+			reqMap["enable_thinking"] = false
+			fmt.Printf("[AiDebug] 未启用思考模式，设置为 false\n")
 		}
 
 		jsonData, err := json.Marshal(reqMap)
