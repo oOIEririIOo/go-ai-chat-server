@@ -1,8 +1,9 @@
 package models
 
 type AiMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role     string `json:"role"`
+	Content  string `json:"content"`
+	ClientID string `json:"client_id,omitempty"` // 客户端消息ID，用于消息同步和去重
 }
 
 type Tool struct {
@@ -42,6 +43,7 @@ type AiResponse struct {
 
 type ChatStreamRequest struct {
 	SessionID      string      `json:"session_id"`
+	ClientID       string      `json:"client_id"` // 客户端消息ID，用于消息同步和去重
 	Messages       []AiMessage `json:"messages"`
 	Model          string      `json:"model,omitempty"`
 	Tools          []Tool      `json:"tools,omitempty"` // 接收前端传来的 tools 列表

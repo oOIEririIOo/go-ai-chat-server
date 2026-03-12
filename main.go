@@ -81,7 +81,8 @@ func main() {
 	fmt.Printf("[AuthDebug]   GET  /chat/sessions\n")
 	fmt.Printf("[AuthDebug]   GET  /chat/sessions/:id\n")
 	fmt.Printf("[AuthDebug]   DELETE /chat/sessions/:id\n")
-	fmt.Printf("[AuthDebug]   POST /chat/stream\n")
+	fmt.Printf("[AuthDebug]   GET  /chat/ws/:sessionId (WebSocket - 实时聊天)\n")
+	fmt.Printf("[AuthDebug]   POST /chat/generate-title\n")
 
 	if err := r.RunTLS(port, certFile, keyFile); err != nil {
 		log.Fatalf("[AuthDebug] HTTPS 服务器启动失败: %v", err)

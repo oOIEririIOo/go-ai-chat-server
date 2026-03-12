@@ -5,10 +5,8 @@ import (
 	"ai-chat/models"
 	"ai-chat/service"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -32,6 +30,11 @@ func NewChatController(db *gorm.DB, aiService *service.AiService) *ChatControlle
 		chatService: service.NewChatService(db, aiService),
 		db:          db,
 	}
+}
+
+// GetChatService 获取聊天服务（供其他控制器使用）
+func (c *ChatController) GetChatService() *service.ChatService {
+	return c.chatService
 }
 
 // CreateSessionRequest 创建会话请求结构
@@ -133,59 +136,17 @@ type StreamChatRequest struct {
 	BaseUrl string `json:"base_url" binding:"required"` // Base URL
 }
 
-// StreamChat 流式聊天
-// 功能: 处理流式聊天请求，与AI模型进行实时对话
-// 参数:
-//   - ctx: Gin 上下文
+// StreamChat 流式聊天（已迁移至WebSocket）
+// 功能: 此方法已弃用，改用WebSocket实现
+// 新端点: GET /chat/ws/{sessionId}
+// 说明: 所有消息处理和AI回复现已通过WebSocket双向通信实现
 func (c *ChatController) StreamChat(ctx *gin.Context) {
-	fmt.Printf("[ChatDebug] Controller: 收到流式聊天请求\n")
-
-	var req StreamChatRequest
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		fmt.Printf("[ChatDebug] Controller: 请求参数绑定失败: %v\n", err)
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	fmt.Printf("[ChatDebug] Controller: 开始流式聊天，会话ID=%d，消息数=%d，模型=%s\n", req.SessionID, len(req.Messages), req.ModelId)
-	fmt.Printf("[ChatDebug] Controller: BaseUrl=%s\n", req.BaseUrl)
-	fmt.Printf("[ChatDebug] Controller: Tools=%v\n", req.Tools)
-
-	// 动态创建 AiService
-	aiService := service.NewAiService(req.ApiKey, req.BaseUrl, req.ModelId)
-	chatService := service.NewChatService(c.db, aiService)
-
-	dataChan, errChan := chatService.StreamChat(req.SessionID, req.Messages, req.Tools)
-
-	ctx.Header("Content-Type", "text/event-stream")
-	ctx.Header("Cache-Control", "no-cache")
-	ctx.Header("Connection", "keep-alive")
-	ctx.Header("Transfer-Encoding", "chunked")
-
-	ctx.Stream(func(w io.Writer) bool {
-		select {
-		case content := <-dataChan:
-			// 使用 SSE 多行格式：每行前面加 "data: "，空行表示结束
-			lines := strings.Split(content, "\n")
-			for _, line := range lines {
-				fmt.Fprintf(w, "data: %s\n", line)
-			}
-			fmt.Fprint(w, "\n") // 空行表示消息结束
-			// 尝试类型断言获取 Flusher 接口
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			return true
-		case err := <-errChan:
-			if err != nil {
-				fmt.Printf("[ChatDebug] Controller: 流式聊天错误: %v\n", err)
-				fmt.Fprintf(w, "data: [ERROR] %s\n\n", err.Error())
-			}
-			return false
-		}
+	fmt.Printf("[ChatDebug] Controller: StreamChat已迁移至WebSocket\n")
+	ctx.JSON(http.StatusGone, gin.H{
+		"error":   "此HTTP端点已迁移至WebSocket",
+		"message": "请使用 GET /chat/ws/{sessionId} 进行实时聊天",
+		"details": "所有消息和AI回复现已通过WebSocket双向通信，支持自动重连、消息去重、心跳检测",
 	})
-
-	fmt.Printf("[ChatDebug] Controller: 流式聊天完成\n")
 }
 
 // DeleteSession 删除会话
