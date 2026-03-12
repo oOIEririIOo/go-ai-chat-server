@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -32,7 +33,7 @@ type StreamResponse struct {
 }
 
 // SendStreamRequest 发送流式请求到AI服务
-func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []models.Tool) (<-chan string, <-chan error) {
+func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []models.Tool, modelId string, baseUrl string) (<-chan string, <-chan error) {
 	dataChan := make(chan string)
 	errChan := make(chan error)
 
@@ -40,9 +41,23 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 		defer close(dataChan)
 		defer close(errChan)
 
+		// 使用传入的参数，如果为空则使用默认值
+		actualModelId := modelId
+		if actualModelId == "" {
+			actualModelId = s.ModelId
+		}
+
+		actualBaseUrl := baseUrl
+		if actualBaseUrl == "" {
+			actualBaseUrl = s.BaseUrl
+		}
+
+		fmt.Printf("[AiDebug] 使用模型: %s, BaseURL: %s\n", actualModelId, actualBaseUrl)
+		os.Stdout.Sync()
+
 		// 构建基础请求体
 		reqMap := map[string]interface{}{
-			"model":    s.ModelId,
+			"model":    actualModelId,
 			"messages": messages,
 			"stream":   true,
 		}
@@ -69,10 +84,11 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 			return
 		}
 
-		fmt.Printf("[AiDebug] 请求URL: %schat/completions\n", s.BaseUrl)
+		fmt.Printf("[AiDebug] 请求URL: %schat/completions\n", actualBaseUrl)
 		fmt.Printf("[AiDebug] 请求体: %s\n", string(jsonData))
+		os.Stdout.Sync()
 
-		httpReq, err := http.NewRequest("POST", s.BaseUrl+"chat/completions", bytes.NewBuffer(jsonData))
+		httpReq, err := http.NewRequest("POST", actualBaseUrl+"chat/completions", bytes.NewBuffer(jsonData))
 		if err != nil {
 			errChan <- fmt.Errorf("创建请求失败: %v", err)
 			return

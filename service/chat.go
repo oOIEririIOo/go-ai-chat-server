@@ -58,14 +58,41 @@ func (s *ChatService) GetSession(sessionId uint) (*models.ChatSession, error) {
 	return &session, nil
 }
 
+// GetNextSeq 获取下一个会话的消息序列号
+func (s *ChatService) GetNextSeq(sessionId uint) (int64, error) {
+	var maxSeq int64
+	result := s.db.Model(&models.ChatMessage{}).
+		Where("session_id = ?", sessionId).
+		Select("COALESCE(MAX(seq), 0)").
+		Scan(&maxSeq)
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("获取最大序列号失败: %v", result.Error)
+	}
+	return maxSeq + 1, nil
+}
+
 // SaveMessage 保存消息
 func (s *ChatService) SaveMessage(sessionId uint, role, content, reasoningContent string) (*models.ChatMessage, error) {
+	return s.SaveMessageWithClientID(sessionId, role, content, reasoningContent, "")
+}
+
+// SaveMessageWithClientID 保存消息（带ClientID支持）
+func (s *ChatService) SaveMessageWithClientID(sessionId uint, role, content, reasoningContent, clientID string) (*models.ChatMessage, error) {
+	// 自动获取下一个seq
+	seq, err := s.GetNextSeq(sessionId)
+	if err != nil {
+		return nil, err
+	}
+
 	now := time.Now().Format("2006-01-02 15:04:05")
 	message := &models.ChatMessage{
 		SessionID:        sessionId,
 		Role:             role,
 		Content:          content,
 		ReasoningContent: reasoningContent,
+		ClientID:         clientID,
+		Seq:              seq,
 		Timestamp:        time.Now().Unix(),
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -129,23 +156,13 @@ func (s *ChatService) DeleteAllSessions(userId uint) error {
 }
 
 // StreamChat 流式聊天
-func (s *ChatService) StreamChat(sessionId uint, messages []models.AiMessage, tools []models.Tool) (<-chan string, <-chan error) {
-	fmt.Printf("[ChatDebug] Service: 开始流式聊天，会话ID=%d\n", sessionId)
+func (s *ChatService) StreamChat(sessionId uint, messages []models.AiMessage, tools []models.Tool, modelId string, baseUrl string) (<-chan string, <-chan error) {
+	fmt.Printf("[ChatDebug] Service: 开始流式聊天，会话ID=%d, modelId=%s, baseUrl=%s\n", sessionId, modelId, baseUrl)
 
-	// 保存用户消息到数据库（最后一条消息是用户的新消息）
-	if len(messages) > 0 {
-		lastMessage := messages[len(messages)-1]
-		if lastMessage.Role == "user" {
-			_, err := s.SaveMessage(sessionId, "user", lastMessage.Content, "")
-			if err != nil {
-				fmt.Printf("[ChatDebug] Service: 保存用户消息失败: %v\n", err)
-			} else {
-				fmt.Printf("[ChatDebug] Service: 保存用户消息成功\n")
-			}
-		}
-	}
+	// 注意：用户消息已由 WebSocketController.handleStreamMessage 保存（带clientId）
+	// 这里不再重复保存用户消息
 
-	dataChan, errChan := s.aiService.SendStreamRequest(messages, tools)
+	dataChan, errChan := s.aiService.SendStreamRequest(messages, tools, modelId, baseUrl)
 
 	// 创建新的 channel 用于返回给调用者
 	outChan := make(chan string)
