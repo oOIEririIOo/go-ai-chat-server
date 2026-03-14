@@ -47,6 +47,7 @@ func main() {
 	// 注册路由
 	routes.UserRoutes(r, DB)
 	routes.ChatRoutes(r, DB, aiService)
+	routes.WebSocketRoutes(r, DB, aiService) // WebSocket 路由
 
 	// 读取环境变量以配置 TLS
 	port := ":443"
@@ -82,6 +83,7 @@ func main() {
 	fmt.Printf("[AuthDebug]   GET  /chat/sessions/:id\n")
 	fmt.Printf("[AuthDebug]   DELETE /chat/sessions/:id\n")
 	fmt.Printf("[AuthDebug]   POST /chat/stream\n")
+	fmt.Printf("[AuthDebug]   GET  /ws/chat (WebSocket)\n")
 
 	if err := r.RunTLS(port, certFile, keyFile); err != nil {
 		log.Fatalf("[AuthDebug] HTTPS 服务器启动失败: %v", err)

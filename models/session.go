@@ -13,5 +13,6 @@ type ChatSession struct {
 	UserID      uint           `json:"user_id"`
 	Title       string         `json:"title"`
 	LastMessage string         `json:"last_message"`
+	UpdateTime  int64          `json:"update_time"`
 	Messages    []ChatMessage  `gorm:"foreignKey:SessionID" json:"messages"` // 一对多
 }
