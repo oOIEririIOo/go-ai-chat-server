@@ -95,11 +95,16 @@ func handleChatMessage(conn *websocket.Conn, db *gorm.DB, aiService *service.AiS
 		}
 	}
 
+	now := time.Now()
+	nowString := now.Format("2006-01-02 15:04:05")
 	userMsg := models.ChatMessage{
 		ID:        userMsgID, // 使用前端生成的 ID（从 messages 中获取）
 		SessionID: uint(request.SessionID),
 		Role:      "user",
 		Content:   lastUserMessage,
+		Timestamp: now.Unix(),
+		CreatedAt: nowString,
+		UpdatedAt: nowString,
 	}
 	if err := db.Create(&userMsg).Error; err != nil {
 		log.Printf("[WebSocket] 保存用户消息失败: %v", err)
@@ -113,6 +118,9 @@ func handleChatMessage(conn *websocket.Conn, db *gorm.DB, aiService *service.AiS
 		SessionID:   uint(request.SessionID),
 		Role:        "assistant",
 		Content:     "",
+		Timestamp:   now.Unix(),
+		CreatedAt:   nowString,
+		UpdatedAt:   nowString,
 		IsStreaming: true,
 	}
 	if err := db.Create(&aiMsg).Error; err != nil {
@@ -206,6 +214,7 @@ finish:
 		"reasoning_content": fullReasoningContent,
 		"is_streaming":      false,
 		"is_reasoning":      false,
+		"updated_at":        time.Now().Format("2006-01-02 15:04:05"),
 	})
 
 	// 更新会话的最后消息和时间

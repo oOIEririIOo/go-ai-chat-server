@@ -26,6 +26,6 @@ go.work
 *.log
 
 agentHelper/
-
+.gocache/
 tmp/
 *.tmp
