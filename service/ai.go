@@ -2,6 +2,7 @@ package service
 
 import (
 	"ai-chat/models"
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -40,14 +41,12 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 		defer close(dataChan)
 		defer close(errChan)
 
-		// 构建基础请求体
 		reqMap := map[string]interface{}{
 			"model":    s.ModelId,
 			"messages": messages,
 			"stream":   true,
 		}
 
-		// 解析 tools 列表，将字段名设为 true
 		var hasThinking bool
 		for _, tool := range tools {
 			reqMap[tool.Type] = true
@@ -57,7 +56,6 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 			}
 		}
 
-		// 如果没有思考模式，默认设置为 false
 		if !hasThinking {
 			reqMap["enable_thinking"] = false
 			fmt.Printf("[AiDebug] 未启用思考模式，设置为 false\n")
@@ -100,73 +98,41 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 			return
 		}
 
-		reader := resp.Body
-		buf := make([]byte, 1024)
+		reader := bufio.NewReader(resp.Body)
 		var reasoningBuffer strings.Builder
 		var contentBuffer strings.Builder
+		var eventData strings.Builder
 
 		for {
-			n, err := reader.Read(buf)
-			if err != nil && err != io.EOF {
-				errChan <- fmt.Errorf("读取响应失败: %v", err)
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil && readErr != io.EOF {
+				errChan <- fmt.Errorf("读取响应失败: %v", readErr)
 				return
 			}
-			if n == 0 {
-				break
+
+			trimmedLine := strings.TrimRight(line, "\r\n")
+			if strings.HasPrefix(trimmedLine, "data:") {
+				payload := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "data:"))
+				if eventData.Len() > 0 {
+					eventData.WriteByte('\n')
+				}
+				eventData.WriteString(payload)
 			}
 
-			data := string(buf[:n])
-			lines := strings.Split(data, "\n")
+			if trimmedLine == "" && eventData.Len() > 0 {
+				if s.processStreamEvent(eventData.String(), &reasoningBuffer, &contentBuffer, dataChan) {
+					return
+				}
+				eventData.Reset()
+			}
 
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "data: ") {
-					jsonData := strings.TrimPrefix(line, "data: ")
-					if jsonData == "[DONE]" {
-						fmt.Printf("[AiDebug] 收到 [DONE] 信号\n")
+			if readErr == io.EOF {
+				if eventData.Len() > 0 {
+					if s.processStreamEvent(eventData.String(), &reasoningBuffer, &contentBuffer, dataChan) {
 						return
 					}
-
-					var streamResp models.AiResponse
-					if err := json.Unmarshal([]byte(jsonData), &streamResp); err != nil {
-						fmt.Printf("[AiDebug] JSON解析失败: %v, 原始数据: %s\n", err, jsonData)
-						continue
-					}
-
-					if len(streamResp.Choices) > 0 {
-						delta := streamResp.Choices[0].Delta
-
-						// 处理思考内容（reasoning_content）
-						if delta.ReasoningContent != "" {
-							reasoningBuffer.WriteString(delta.ReasoningContent)
-							fmt.Printf("[AiDebug] 思考内容: %s\n", delta.ReasoningContent)
-
-							// 构建响应：包含思考内容和空的内容
-							response := StreamResponse{
-								Content:          contentBuffer.String(),
-								ReasoningContent: reasoningBuffer.String(),
-								IsReasoning:      true,
-							}
-							respJson, _ := json.Marshal(response)
-							dataChan <- string(respJson)
-						}
-
-						// 处理正常内容
-						if delta.Content != "" {
-							contentBuffer.WriteString(delta.Content)
-							fmt.Printf("[AiDebug] 正常内容: %s\n", delta.Content)
-
-							// 构建响应：包含内容和之前的思考内容
-							response := StreamResponse{
-								Content:          contentBuffer.String(),
-								ReasoningContent: reasoningBuffer.String(),
-								IsReasoning:      false,
-							}
-							respJson, _ := json.Marshal(response)
-							dataChan <- string(respJson)
-						}
-					}
 				}
+				break
 			}
 		}
 	}()
@@ -174,10 +140,60 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 	return dataChan, errChan
 }
 
+func (s *AiService) processStreamEvent(event string, reasoningBuffer, contentBuffer *strings.Builder, dataChan chan<- string) bool {
+	jsonData := strings.TrimSpace(event)
+	if jsonData == "" {
+		return false
+	}
+
+	if jsonData == "[DONE]" {
+		fmt.Printf("[AiDebug] 收到 [DONE] 信号\n")
+		return true
+	}
+
+	var streamResp models.AiResponse
+	if err := json.Unmarshal([]byte(jsonData), &streamResp); err != nil {
+		fmt.Printf("[AiDebug] JSON解析失败: %v, 原始数据: %s\n", err, jsonData)
+		return false
+	}
+
+	if len(streamResp.Choices) == 0 {
+		return false
+	}
+
+	delta := streamResp.Choices[0].Delta
+	if delta.ReasoningContent != "" {
+		reasoningBuffer.WriteString(delta.ReasoningContent)
+		fmt.Printf("[AiDebug] 思考内容: %s\n", delta.ReasoningContent)
+
+		response := StreamResponse{
+			Content:          contentBuffer.String(),
+			ReasoningContent: reasoningBuffer.String(),
+			IsReasoning:      true,
+		}
+		respJSON, _ := json.Marshal(response)
+		dataChan <- string(respJSON)
+	}
+
+	if delta.Content != "" {
+		contentBuffer.WriteString(delta.Content)
+		fmt.Printf("[AiDebug] 正常内容: %s\n", delta.Content)
+
+		response := StreamResponse{
+			Content:          contentBuffer.String(),
+			ReasoningContent: reasoningBuffer.String(),
+			IsReasoning:      false,
+		}
+		respJSON, _ := json.Marshal(response)
+		dataChan <- string(respJSON)
+	}
+
+	return false
+}
+
 // GenerateTitle 根据用户消息生成会话标题
 func (s *AiService) GenerateTitle(userMessage string) (string, error) {
 	prompt := fmt.Sprintf(`请为以下用户消息生成一个简短的会话标题（不超过10个字），只需要返回标题内容，不要有任何解释或标点符号：
-
 用户消息：%s
 
 标题：`, userMessage)
@@ -229,9 +245,7 @@ func (s *AiService) GenerateTitle(userMessage string) (string, error) {
 
 	if len(aiResp.Choices) > 0 {
 		title := strings.TrimSpace(aiResp.Choices[0].Message.Content)
-		title = strings.Trim(title, `"'"'"'
-
-`)
+		title = strings.Trim(title, "\"'` \n\r\t")
 		if title != "" {
 			return title, nil
 		}
