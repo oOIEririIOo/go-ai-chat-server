@@ -10,15 +10,17 @@ import (
 )
 
 // ChatRoutes 注册聊天相关路由。
-func ChatRoutes(r *gin.Engine, db *gorm.DB, aiService *service.AiService) {
+func ChatRoutes(r *gin.Engine, db *gorm.DB, aiService *service.AiService, ossService *service.OSSService) {
 	chatGroup := r.Group("/chat")
 	chatGroup.Use(middleware.AuthMiddleware(db))
 	{
-		chatController := controller.NewChatController(db, aiService)
+		chatController := controller.NewChatController(db, aiService, ossService)
 
 		chatGroup.POST("/sessions", chatController.CreateSession)
 		chatGroup.GET("/sessions", chatController.GetSessions)
 		chatGroup.GET("/sessions/:id/messages", chatController.GetSessionMessages)
+		chatGroup.POST("/uploads/attachments", chatController.UploadAttachments)
+		chatGroup.POST("/sessions/:id/messages", chatController.CreateChatMessage)
 		chatGroup.DELETE("/sessions/:id", chatController.DeleteSession)
 		chatGroup.DELETE("/sessions", chatController.DeleteAllSessions)
 		chatGroup.POST("/stream", chatController.StreamChat)

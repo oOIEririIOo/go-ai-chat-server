@@ -25,15 +25,15 @@ func NewAiService(apiKey, baseUrl, modelId string) *AiService {
 	}
 }
 
-// StreamResponse 流式响应结构
+// StreamResponse 是返回给前端流式层的统一结构。
 type StreamResponse struct {
 	Content          string `json:"content"`
 	ReasoningContent string `json:"reasoning_content"`
 	IsReasoning      bool   `json:"is_reasoning"`
 }
 
-// SendStreamRequest 发送流式请求到AI服务
-func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []models.Tool) (<-chan string, <-chan error) {
+// SendStreamRequest 把已经转换好的 AI 消息发送到 chat/completions。
+func (s *AiService) SendStreamRequest(messages []models.AiChatMessage, tools []models.Tool) (<-chan string, <-chan error) {
 	dataChan := make(chan string)
 	errChan := make(chan error)
 
@@ -50,7 +50,7 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 		var hasThinking bool
 		for _, tool := range tools {
 			reqMap[tool.Type] = true
-			fmt.Printf("[AiDebug] 启用功能: %s = true\n", tool.Type)
+			fmt.Printf("[AiDebug] enable tool: %s = true\n", tool.Type)
 			if tool.Type == "enable_thinking" {
 				hasThinking = true
 			}
@@ -58,21 +58,21 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 
 		if !hasThinking {
 			reqMap["enable_thinking"] = false
-			fmt.Printf("[AiDebug] 未启用思考模式，设置为 false\n")
+			fmt.Printf("[AiDebug] enable_thinking = false\n")
 		}
 
 		jsonData, err := json.Marshal(reqMap)
 		if err != nil {
-			errChan <- fmt.Errorf("JSON 编码失败: %v", err)
+			errChan <- fmt.Errorf("JSON encode failed: %v", err)
 			return
 		}
 
-		fmt.Printf("[AiDebug] 请求URL: %schat/completions\n", s.BaseUrl)
-		fmt.Printf("[AiDebug] 请求体: %s\n", string(jsonData))
+		fmt.Printf("[AiDebug] request URL: %schat/completions\n", s.BaseUrl)
+		fmt.Printf("[AiDebug] request body: %s\n", string(jsonData))
 
 		httpReq, err := http.NewRequest("POST", s.BaseUrl+"chat/completions", bytes.NewBuffer(jsonData))
 		if err != nil {
-			errChan <- fmt.Errorf("创建请求失败: %v", err)
+			errChan <- fmt.Errorf("create request failed: %v", err)
 			return
 		}
 
@@ -84,17 +84,17 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 		client := &http.Client{}
 		resp, err := client.Do(httpReq)
 		if err != nil {
-			errChan <- fmt.Errorf("请求失败: %v", err)
+			errChan <- fmt.Errorf("request failed: %v", err)
 			return
 		}
 		defer resp.Body.Close()
 
-		fmt.Printf("[AiDebug] AI响应状态码: %d\n", resp.StatusCode)
+		fmt.Printf("[AiDebug] response status: %d\n", resp.StatusCode)
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			fmt.Printf("[AiDebug] AI错误响应: %s\n", string(body))
-			errChan <- fmt.Errorf("API 错误: %d - %s", resp.StatusCode, string(body))
+			fmt.Printf("[AiDebug] error response: %s\n", string(body))
+			errChan <- fmt.Errorf("API error: %d - %s", resp.StatusCode, string(body))
 			return
 		}
 
@@ -106,7 +106,7 @@ func (s *AiService) SendStreamRequest(messages []models.AiMessage, tools []model
 		for {
 			line, readErr := reader.ReadString('\n')
 			if readErr != nil && readErr != io.EOF {
-				errChan <- fmt.Errorf("读取响应失败: %v", readErr)
+				errChan <- fmt.Errorf("read response failed: %v", readErr)
 				return
 			}
 
@@ -147,13 +147,13 @@ func (s *AiService) processStreamEvent(event string, reasoningBuffer, contentBuf
 	}
 
 	if jsonData == "[DONE]" {
-		fmt.Printf("[AiDebug] 收到 [DONE] 信号\n")
+		fmt.Printf("[AiDebug] received [DONE]\n")
 		return true
 	}
 
 	var streamResp models.AiResponse
 	if err := json.Unmarshal([]byte(jsonData), &streamResp); err != nil {
-		fmt.Printf("[AiDebug] JSON解析失败: %v, 原始数据: %s\n", err, jsonData)
+		fmt.Printf("[AiDebug] decode stream event failed: %v, raw=%s\n", err, jsonData)
 		return false
 	}
 
@@ -164,7 +164,6 @@ func (s *AiService) processStreamEvent(event string, reasoningBuffer, contentBuf
 	delta := streamResp.Choices[0].Delta
 	if delta.ReasoningContent != "" {
 		reasoningBuffer.WriteString(delta.ReasoningContent)
-		fmt.Printf("[AiDebug] 思考内容: %s\n", delta.ReasoningContent)
 
 		response := StreamResponse{
 			Content:          contentBuffer.String(),
@@ -177,7 +176,6 @@ func (s *AiService) processStreamEvent(event string, reasoningBuffer, contentBuf
 
 	if delta.Content != "" {
 		contentBuffer.WriteString(delta.Content)
-		fmt.Printf("[AiDebug] 正常内容: %s\n", delta.Content)
 
 		response := StreamResponse{
 			Content:          contentBuffer.String(),
@@ -191,18 +189,18 @@ func (s *AiService) processStreamEvent(event string, reasoningBuffer, contentBuf
 	return false
 }
 
-// GenerateTitle 根据用户消息生成会话标题
+// GenerateTitle 继续使用纯文本请求，不引入图片上下文。
 func (s *AiService) GenerateTitle(userMessage string) (string, error) {
-	prompt := fmt.Sprintf(`请为以下用户消息生成一个简短的会话标题（不超过10个字），只需要返回标题内容，不要有任何解释或标点符号：
-用户消息：%s
+	prompt := fmt.Sprintf(
+		"请为以下用户消息生成一个简短的会话标题（不超过10个字），只需要返回标题内容，不要有任何解释或标点符号。用户消息：%s\n\n标题：",
+		userMessage,
+	)
 
-标题：`, userMessage)
-
-	messages := []models.AiMessage{
+	messages := []models.AiChatMessage{
 		{Role: "user", Content: prompt},
 	}
 
-	req := models.AiRequest{
+	req := models.AiChatCompletionRequest{
 		Model:    s.ModelId,
 		Messages: messages,
 		Stream:   false,
@@ -210,12 +208,12 @@ func (s *AiService) GenerateTitle(userMessage string) (string, error) {
 
 	jsonData, err := json.Marshal(req)
 	if err != nil {
-		return "", fmt.Errorf("JSON 编码失败: %v", err)
+		return "", fmt.Errorf("JSON encode failed: %v", err)
 	}
 
 	httpReq, err := http.NewRequest("POST", s.BaseUrl+"chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %v", err)
+		return "", fmt.Errorf("create request failed: %v", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -224,23 +222,23 @@ func (s *AiService) GenerateTitle(userMessage string) (string, error) {
 	client := &http.Client{}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("请求失败: %v", err)
+		return "", fmt.Errorf("request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API 错误: %d - %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("API error: %d - %s", resp.StatusCode, string(body))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("读取响应失败: %v", err)
+		return "", fmt.Errorf("read response failed: %v", err)
 	}
 
 	var aiResp models.AiResponse
 	if err := json.Unmarshal(body, &aiResp); err != nil {
-		return "", fmt.Errorf("解析响应失败: %v", err)
+		return "", fmt.Errorf("decode response failed: %v", err)
 	}
 
 	if len(aiResp.Choices) > 0 {
