@@ -40,8 +40,10 @@ type OSSService struct {
 func NewOSSServiceFromEnv() (*OSSService, error) {
 	bucketName := strings.TrimSpace(os.Getenv("OSS_BUCKET"))
 	endpoint := strings.TrimSpace(os.Getenv("OSS_ENDPOINT"))
-	accessKeyID := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_ID"))
-	accessKeySecret := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_SECRET"))
+	//accessKeyID := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_ID"))
+	accessKeyID := "LTAI5t6eAkhCCCpKRBdwHp5q"
+	//accessKeySecret := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_SECRET"))
+	accessKeySecret := "BgUyyt84R0TDO9FiYcvixvFutd2IjA"
 	publicBaseURL := strings.TrimSpace(os.Getenv("OSS_PUBLIC_BASE_URL"))
 
 	if bucketName == "" {

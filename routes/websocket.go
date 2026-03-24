@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -43,7 +44,7 @@ func handleWebSocket(c *gin.Context, db *gorm.DB) {
 	for {
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("[WebSocket] read message failed: %v", err)
+			logWebSocketDisconnect("read message failed", err)
 			break
 		}
 
@@ -134,7 +135,7 @@ func handleChatMessage(conn *websocket.Conn, db *gorm.DB, request *models.WebSoc
 
 			jsonData, _ := json.Marshal(chatResponse)
 			if err := conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
-				log.Printf("[WebSocket] send message failed: %v", err)
+				logWebSocketDisconnect("send message failed", err)
 				return
 			}
 
@@ -221,4 +222,42 @@ func sendDone(conn *websocket.Conn, sessionID int64, aiMessageID string) {
 	}
 	jsonData, _ := json.Marshal(doneResponse)
 	conn.WriteMessage(websocket.TextMessage, jsonData)
+}
+
+// 统一处理 WebSocket 读写异常的日志分级。
+//
+// 这里把客户端主动离开、网络中断、Windows 下 wsasend/wsarecv 之类的常见断连
+// 视为“预期断开”，避免它们和真正的业务错误混在一起。
+func logWebSocketDisconnect(action string, err error) {
+	if err == nil {
+		return
+	}
+
+	if isExpectedWebSocketDisconnect(err) {
+		log.Printf("[WebSocket] client disconnected during %s: %v", action, err)
+		return
+	}
+
+	log.Printf("[WebSocket] %s: %v", action, err)
+}
+
+// 判断一个 WebSocket 错误是否属于常见的对端断开场景。
+func isExpectedWebSocketDisconnect(err error) bool {
+	if websocket.IsCloseError(
+		err,
+		websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseNoStatusReceived,
+		websocket.CloseAbnormalClosure,
+	) {
+		return true
+	}
+
+	errMsg := strings.ToLower(err.Error())
+	return strings.Contains(errMsg, "unexpected eof") ||
+		strings.Contains(errMsg, "wsasend") ||
+		strings.Contains(errMsg, "wsarecv") ||
+		strings.Contains(errMsg, "broken pipe") ||
+		strings.Contains(errMsg, "connection reset by peer") ||
+		strings.Contains(errMsg, "connection aborted")
 }
