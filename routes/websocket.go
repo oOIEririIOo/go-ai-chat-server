@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,10 +17,40 @@ import (
 	"gorm.io/gorm"
 )
 
-var upGrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+const (
+	wsWriteWait  = 10 * time.Second
+	wsPongWait   = 30 * time.Second
+	wsPingPeriod = 20 * time.Second
+)
+
+var (
+	upGrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+	nextWSConnectionID uint64
+)
+
+type wsConnection struct {
+	id             uint64
+	conn           *websocket.Conn
+	db             *gorm.DB
+	writeMu        sync.Mutex
+	sessionMu      sync.Mutex
+	activeSessions map[int64]struct{}
+	done           chan struct{}
+	closeOnce      sync.Once
+}
+
+func newWSConnection(conn *websocket.Conn, db *gorm.DB) *wsConnection {
+	return &wsConnection{
+		id:             atomic.AddUint64(&nextWSConnectionID, 1),
+		conn:           conn,
+		db:             db,
+		activeSessions: make(map[int64]struct{}),
+		done:           make(chan struct{}),
+	}
 }
 
 // WebSocketRoutes 注册 WebSocket 路由。
@@ -37,61 +69,87 @@ func handleWebSocket(c *gin.Context, db *gorm.DB) {
 		log.Printf("[WebSocket] upgrade failed: %v", err)
 		return
 	}
-	defer conn.Close()
 
-	log.Println("[WebSocket] connected")
+	client := newWSConnection(conn, db)
+	defer client.shutdown()
+
+	client.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	client.conn.SetPongHandler(func(appData string) error {
+		log.Printf("[WebSocket] conn=%d recv pong", client.id)
+		return client.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
+
+	log.Printf("[WebSocket] connected conn=%d", client.id)
+	go client.startPingLoop()
 
 	for {
-		messageType, message, err := conn.ReadMessage()
+		messageType, message, err := client.conn.ReadMessage()
 		if err != nil {
-			logWebSocketDisconnect("read message failed", err)
-			break
+			logWebSocketDisconnect(fmt.Sprintf("conn=%d read message failed", client.id), err)
+			return
 		}
 
-		log.Printf("[WebSocket] recv(type=%d): %s", messageType, string(message))
+		client.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		log.Printf("[WebSocket] conn=%d recv(type=%d): %s", client.id, messageType, string(message))
 
 		var chatRequest models.WebSocketChatRequest
 		if err := json.Unmarshal(message, &chatRequest); err != nil {
-			log.Printf("[WebSocket] decode request failed: %v", err)
-			sendError(conn, "消息格式错误")
+			log.Printf("[WebSocket] conn=%d decode request failed: %v", client.id, err)
+			if err := client.sendError("消息格式错误"); err != nil {
+				logWebSocketDisconnect(fmt.Sprintf("conn=%d send error failed", client.id), err)
+				return
+			}
 			continue
 		}
 
-		switch chatRequest.Type {
+		requestCopy := chatRequest
+		switch requestCopy.Type {
 		case "chat":
-			handleChatMessage(conn, db, &chatRequest)
+			go client.handleChatMessage(&requestCopy)
 		case "recover":
-			handleRecoverMessage(conn, db, &chatRequest)
+			go client.handleRecoverMessage(&requestCopy)
 		default:
-			sendError(conn, "未知的消息类型")
+			if err := client.sendError("未知的消息类型"); err != nil {
+				logWebSocketDisconnect(fmt.Sprintf("conn=%d send error failed", client.id), err)
+				return
+			}
 		}
 	}
 }
 
-func handleChatMessage(conn *websocket.Conn, db *gorm.DB, request *models.WebSocketChatRequest) {
-	log.Printf("[WebSocket] handle chat, sessionId=%d, userMessageId=%s", request.SessionID, request.UserMessageID)
+func (c *wsConnection) handleChatMessage(request *models.WebSocketChatRequest) {
+	if !c.tryStartSession(request.SessionID) {
+		log.Printf("[WebSocket] conn=%d reject duplicate chat, sessionId=%d", c.id, request.SessionID)
+		if err := c.sendError("当前会话正在回复中，请稍后再试"); err != nil {
+			logWebSocketDisconnect(fmt.Sprintf("conn=%d session=%d send busy error failed", c.id, request.SessionID), err)
+		}
+		return
+	}
+	defer c.finishSession(request.SessionID)
+
+	log.Printf("[WebSocket] conn=%d chat start, sessionId=%d, userMessageId=%s", c.id, request.SessionID, request.UserMessageID)
 
 	dynamicAiService := service.NewAiService(request.ApiKey, request.BaseUrl, request.ModelID)
-	chatService := service.NewChatService(db, dynamicAiService, nil)
+	chatService := service.NewChatService(c.db, dynamicAiService, nil)
 
 	userMessage, err := chatService.GetMessageByID(uint(request.SessionID), request.UserMessageID)
 	if err != nil {
-		log.Printf("[WebSocket] load user message failed: %v", err)
-		sendError(conn, "未找到用户消息")
+		log.Printf("[WebSocket] conn=%d session=%d load user message failed: %v", c.id, request.SessionID, err)
+		c.writeErrorOrDisconnect(request.SessionID, "未找到用户消息")
 		return
 	}
 
 	contextMessages, err := chatService.GetAIContextMessages(uint(request.SessionID), request.UserMessageID, service.AIContextWindowSize)
 	if err != nil {
-		log.Printf("[WebSocket] load ai context failed: %v", err)
-		sendError(conn, "读取上下文失败")
+		log.Printf("[WebSocket] conn=%d session=%d load ai context failed: %v", c.id, request.SessionID, err)
+		c.writeErrorOrDisconnect(request.SessionID, "读取上下文失败")
 		return
 	}
 
 	aiMsg, err := chatService.CreateAssistantPlaceholder(uint(request.SessionID), request.AIMessageID)
 	if err != nil {
-		log.Printf("[WebSocket] create ai placeholder failed: %v", err)
-		sendError(conn, "创建AI消息占位失败")
+		log.Printf("[WebSocket] conn=%d session=%d create ai placeholder failed: %v", c.id, request.SessionID, err)
+		c.writeErrorOrDisconnect(request.SessionID, "创建AI消息占位失败")
 		return
 	}
 
@@ -117,7 +175,7 @@ func handleChatMessage(conn *websocket.Conn, db *gorm.DB, request *models.WebSoc
 
 			var streamResp service.StreamResponse
 			if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
-				log.Printf("[WebSocket] decode stream response failed: %v", err)
+				log.Printf("[WebSocket] conn=%d session=%d decode stream response failed: %v", c.id, request.SessionID, err)
 				continue
 			}
 
@@ -133,25 +191,27 @@ func handleChatMessage(conn *websocket.Conn, db *gorm.DB, request *models.WebSoc
 				AIMessageID:      request.AIMessageID,
 			}
 
-			jsonData, _ := json.Marshal(chatResponse)
-			if err := conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
-				logWebSocketDisconnect("send message failed", err)
+			if err := c.writeJSON(chatResponse); err != nil {
+				logWebSocketDisconnect(fmt.Sprintf("conn=%d session=%d send message failed", c.id, request.SessionID), err)
 				return
 			}
 
 		case err := <-errChan:
 			if err != nil {
-				log.Printf("[WebSocket] ai error: %v", err)
-				sendError(conn, err.Error())
+				log.Printf("[WebSocket] conn=%d session=%d ai error: %v", c.id, request.SessionID, err)
+				c.writeErrorOrDisconnect(request.SessionID, err.Error())
 				return
 			}
 		}
 	}
 
 finish:
-	sendDone(conn, request.SessionID, request.AIMessageID)
+	if err := c.sendDone(request.SessionID, request.AIMessageID); err != nil {
+		logWebSocketDisconnect(fmt.Sprintf("conn=%d session=%d send done failed", c.id, request.SessionID), err)
+		return
+	}
 
-	db.Model(aiMsg).Updates(map[string]interface{}{
+	c.db.Model(aiMsg).Updates(map[string]interface{}{
 		"content":           fullContent,
 		"reasoning_content": fullReasoningContent,
 		"is_streaming":      false,
@@ -159,22 +219,22 @@ finish:
 		"updated_at":        time.Now().Format("2006-01-02 15:04:05"),
 	})
 
-	db.Model(&models.ChatSession{}).Where("id = ?", request.SessionID).Updates(map[string]interface{}{
+	c.db.Model(&models.ChatSession{}).Where("id = ?", request.SessionID).Updates(map[string]interface{}{
 		"last_message": fullContent,
 		"update_time":  time.Now().Unix(),
 	})
 
-	log.Printf("[WebSocket] finished, sessionId=%d, userMessageId=%s", request.SessionID, userMessage.ID)
+	log.Printf("[WebSocket] conn=%d chat finish, sessionId=%d, userMessageId=%s", c.id, request.SessionID, userMessage.ID)
 }
 
-func handleRecoverMessage(conn *websocket.Conn, db *gorm.DB, request *models.WebSocketChatRequest) {
-	log.Printf("[WebSocket] handle recover, sessionId=%d", request.SessionID)
+func (c *wsConnection) handleRecoverMessage(request *models.WebSocketChatRequest) {
+	log.Printf("[WebSocket] conn=%d recover start, sessionId=%d", c.id, request.SessionID)
 
 	var aiMsg models.ChatMessage
-	result := db.Where("session_id = ? AND role = ? AND is_streaming = ?", uint(request.SessionID), "assistant", true).First(&aiMsg)
+	result := c.db.Where("session_id = ? AND role = ? AND is_streaming = ?", uint(request.SessionID), "assistant", true).First(&aiMsg)
 	if result.Error != nil {
-		log.Printf("[WebSocket] no streaming message found: %v", result.Error)
-		sendError(conn, "没有找到正在流式输出的消息")
+		log.Printf("[WebSocket] conn=%d session=%d no streaming message found: %v", c.id, request.SessionID, result.Error)
+		c.writeErrorOrDisconnect(request.SessionID, "没有找到正在流式输出的消息")
 		return
 	}
 
@@ -186,8 +246,10 @@ func handleRecoverMessage(conn *websocket.Conn, db *gorm.DB, request *models.Web
 		SessionID:        request.SessionID,
 		AIMessageID:      aiMsg.ID,
 	}
-	jsonData, _ := json.Marshal(chatResponse)
-	conn.WriteMessage(websocket.TextMessage, jsonData)
+	if err := c.writeJSON(chatResponse); err != nil {
+		logWebSocketDisconnect(fmt.Sprintf("conn=%d session=%d recover send content failed", c.id, request.SessionID), err)
+		return
+	}
 
 	chatResponse = models.WebSocketChatResponse{
 		Content:          aiMsg.Content,
@@ -197,37 +259,109 @@ func handleRecoverMessage(conn *websocket.Conn, db *gorm.DB, request *models.Web
 		SessionID:        request.SessionID,
 		AIMessageID:      aiMsg.ID,
 	}
-	jsonData, _ = json.Marshal(chatResponse)
-	conn.WriteMessage(websocket.TextMessage, jsonData)
-	sendDone(conn, request.SessionID, aiMsg.ID)
+	if err := c.writeJSON(chatResponse); err != nil {
+		logWebSocketDisconnect(fmt.Sprintf("conn=%d session=%d recover send end failed", c.id, request.SessionID), err)
+		return
+	}
+	if err := c.sendDone(request.SessionID, aiMsg.ID); err != nil {
+		logWebSocketDisconnect(fmt.Sprintf("conn=%d session=%d recover send done failed", c.id, request.SessionID), err)
+		return
+	}
 
-	db.Model(&aiMsg).Updates(map[string]interface{}{
+	c.db.Model(&aiMsg).Updates(map[string]interface{}{
 		"is_streaming": false,
 		"is_reasoning": false,
 	})
 
-	log.Printf("[WebSocket] recover finished, sessionId=%d", request.SessionID)
+	log.Printf("[WebSocket] conn=%d recover finish, sessionId=%d", c.id, request.SessionID)
 }
 
-func sendError(conn *websocket.Conn, errorMsg string) {
+func (c *wsConnection) tryStartSession(sessionID int64) bool {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	if _, exists := c.activeSessions[sessionID]; exists {
+		return false
+	}
+	c.activeSessions[sessionID] = struct{}{}
+	return true
+}
+
+func (c *wsConnection) finishSession(sessionID int64) {
+	c.sessionMu.Lock()
+	delete(c.activeSessions, sessionID)
+	c.sessionMu.Unlock()
+}
+
+func (c *wsConnection) startPingLoop() {
+	ticker := time.NewTicker(wsPingPeriod)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			log.Printf("[WebSocket] conn=%d send ping", c.id)
+			if err := c.writeControl(websocket.PingMessage, []byte("ping")); err != nil {
+				logWebSocketDisconnect(fmt.Sprintf("conn=%d ping failed", c.id), err)
+				return
+			}
+		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *wsConnection) writeJSON(v interface{}) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return c.writeMessage(websocket.TextMessage, data)
+}
+
+func (c *wsConnection) sendError(errorMsg string) error {
 	errorMessage := fmt.Sprintf("[ERROR] %s", errorMsg)
-	conn.WriteMessage(websocket.TextMessage, []byte(errorMessage))
+	return c.writeMessage(websocket.TextMessage, []byte(errorMessage))
 }
 
-func sendDone(conn *websocket.Conn, sessionID int64, aiMessageID string) {
+func (c *wsConnection) sendDone(sessionID int64, aiMessageID string) error {
 	doneResponse := map[string]interface{}{
 		"type":          "done",
 		"session_id":    sessionID,
 		"ai_message_id": aiMessageID,
 	}
-	jsonData, _ := json.Marshal(doneResponse)
-	conn.WriteMessage(websocket.TextMessage, jsonData)
+	return c.writeJSON(doneResponse)
+}
+
+func (c *wsConnection) writeMessage(messageType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if err := c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
+		return err
+	}
+	return c.conn.WriteMessage(messageType, data)
+}
+
+func (c *wsConnection) writeControl(messageType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.WriteControl(messageType, data, time.Now().Add(wsWriteWait))
+}
+
+func (c *wsConnection) writeErrorOrDisconnect(sessionID int64, errorMsg string) {
+	if err := c.sendError(errorMsg); err != nil {
+		logWebSocketDisconnect(fmt.Sprintf("conn=%d session=%d send error failed", c.id, sessionID), err)
+	}
+}
+
+func (c *wsConnection) shutdown() {
+	c.closeOnce.Do(func() {
+		close(c.done)
+		_ = c.conn.Close()
+	})
 }
 
 // 统一处理 WebSocket 读写异常的日志分级。
-//
-// 这里把客户端主动离开、网络中断、Windows 下 wsasend/wsarecv 之类的常见断连
-// 视为“预期断开”，避免它们和真正的业务错误混在一起。
 func logWebSocketDisconnect(action string, err error) {
 	if err == nil {
 		return
