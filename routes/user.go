@@ -26,6 +26,9 @@ func UserRoutes(r *gin.Engine, db *gorm.DB) {
 			authorized.POST("/change-password", func(c *gin.Context) {
 				controller.ChangePassword(c, db)
 			})
+			authorized.POST("/change-username", func(c *gin.Context) {
+				controller.ChangeUsername(c, db)
+			})
 		}
 	}
 }

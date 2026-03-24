@@ -110,6 +110,11 @@ type ChangePasswordRequest struct {
 	NewPassword string `json:"new_password" binding:"required"` // 新密码
 }
 
+// ChangeUsernameRequest 修改用户名请求结构
+type ChangeUsernameRequest struct {
+	Username string `json:"username" binding:"required"` // 新用户名
+}
+
 // ChangePassword 修改密码
 // 功能: 验证旧密码，更新为新密码，并使所有旧 Token 失效
 // 参数:
@@ -145,5 +150,52 @@ func ChangePassword(c *gin.Context, db *gorm.DB) {
 	fmt.Printf("[AuthDebug] ChangePassword: 密码修改成功，用户ID=%d，请重新登录\n", userID)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "密码修改成功，请重新登录",
+	})
+}
+
+// ChangeUsername 修改登录账号
+// 功能: 更新当前登录用户的 username，并返回新的 JWT Token
+// 参数:
+//   - c: Gin 上下文
+//   - db: 数据库连接
+func ChangeUsername(c *gin.Context, db *gorm.DB) {
+	fmt.Printf("[AuthDebug] ChangeUsername: 收到修改用户名请求\n")
+
+	userID := middleware.GetUserID(c)
+	if userID == 0 {
+		fmt.Printf("[AuthDebug] ChangeUsername: 未获取到用户ID\n")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
+
+	var req ChangeUsernameRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fmt.Printf("[AuthDebug] ChangeUsername: 请求参数绑定失败: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updatedUser, err := service.ChangeUsername(db, userID, req.Username)
+	if err != nil {
+		fmt.Printf("[AuthDebug] ChangeUsername: 修改用户名失败: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	token, err := service.GenerateToken(updatedUser.ID, updatedUser.Username, updatedUser.TokenVersion)
+	if err != nil {
+		fmt.Printf("[AuthDebug] ChangeUsername: 生成 Token 失败: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成认证令牌失败"})
+		return
+	}
+
+	fmt.Printf("[AuthDebug] ChangeUsername: 用户名修改成功，用户ID=%d，新用户名=%s\n", updatedUser.ID, updatedUser.Username)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "用户名修改成功",
+		"token":   token,
+		"user": gin.H{
+			"id":       updatedUser.ID,
+			"username": updatedUser.Username,
+		},
 	})
 }

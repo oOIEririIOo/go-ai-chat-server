@@ -4,6 +4,7 @@ import (
 	"ai-chat/models"
 	"errors"
 	"fmt"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -116,4 +117,43 @@ func ChangePassword(db *gorm.DB, userID uint, oldPassword, newPassword string) e
 
 	fmt.Printf("[AuthDebug] Service: 密码修改成功，TokenVersion 已递增，用户ID=%d\n", userID)
 	return nil
+}
+
+// ChangeUsername 修改登录账号。
+// username 当前即登录账号字段，不是独立昵称字段。
+func ChangeUsername(db *gorm.DB, userID uint, newUsername string) (*models.User, error) {
+	fmt.Printf("[AuthDebug] Service: 开始修改用户名，用户ID=%d\n", userID)
+
+	trimmedUsername := strings.TrimSpace(newUsername)
+	if trimmedUsername == "" {
+		return nil, errors.New("用户名不能为空")
+	}
+
+	var user models.User
+	if result := db.First(&user, userID); result.Error != nil {
+		fmt.Printf("[AuthDebug] Service: 用户不存在，ID=%d\n", userID)
+		return nil, errors.New("用户不存在")
+	}
+
+	if user.Username == trimmedUsername {
+		return nil, errors.New("新用户名不能与当前用户名相同")
+	}
+
+	var existingUser models.User
+	if result := db.Where("username = ?", trimmedUsername).First(&existingUser); result.Error == nil {
+		fmt.Printf("[AuthDebug] Service: 用户名已存在，用户名=%s\n", trimmedUsername)
+		return nil, errors.New("用户名已存在")
+	} else if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		fmt.Printf("[AuthDebug] Service: 查询用户名唯一性失败: %v\n", result.Error)
+		return nil, result.Error
+	}
+
+	if result := db.Model(&user).Update("username", trimmedUsername); result.Error != nil {
+		fmt.Printf("[AuthDebug] Service: 更新用户名失败: %v\n", result.Error)
+		return nil, result.Error
+	}
+
+	user.Username = trimmedUsername
+	fmt.Printf("[AuthDebug] Service: 用户名修改成功，用户ID=%d，新用户名=%s\n", userID, user.Username)
+	return &user, nil
 }
