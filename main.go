@@ -15,6 +15,7 @@ import (
 
 var DB *gorm.DB
 
+// initDB 初始化 SQLite 数据库并完成基础表迁移。
 func initDB() *gorm.DB {
 	db, err := gorm.Open(sqlite.Open("test.db"), &gorm.Config{})
 	if err != nil {
@@ -29,6 +30,7 @@ func initDB() *gorm.DB {
 	return db
 }
 
+// main 负责装配所有服务并启动 HTTPS 服务。
 func main() {
 	fmt.Println("[AuthDebug] 服务启动中...")
 	DB = initDB()
@@ -44,10 +46,17 @@ func main() {
 		fmt.Printf("[ChatDebug] OSS 未启用: %v\n", err)
 	}
 
+	// 语音转写是可选能力；如果环境变量未配置，则仅禁用该能力，不影响主聊天服务。
+	rtasrService, err := service.NewXFYunRTASRServiceFromEnv()
+	if err != nil {
+		fmt.Printf("[VoiceDebug] RTASR 未启用: %v\n", err)
+	}
+
 	r := gin.Default()
 	routes.UserRoutes(r, DB)
 	routes.ChatRoutes(r, DB, aiService, ossService)
 	routes.WebSocketRoutes(r, DB, aiService)
+	routes.VoiceWebSocketRoutes(r, DB, rtasrService)
 
 	port := ":443"
 	if p := os.Getenv("HTTPS_PORT"); p != "" {
