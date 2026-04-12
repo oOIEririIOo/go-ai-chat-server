@@ -27,8 +27,6 @@ const maxUploadSizeBytes = 10 * 1024 * 1024
 
 var unsafeFileNameChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
-// OSSService 负责把上传的附件转存到阿里云 OSS。
-// 当前第一版只开放图片，后续扩展文档时可以继续复用这一层。
 type OSSService struct {
 	bucketName    string
 	endpoint      string
@@ -36,14 +34,11 @@ type OSSService struct {
 	bucket        *oss.Bucket
 }
 
-// NewOSSServiceFromEnv 从环境变量读取 OSS 配置并初始化客户端。
 func NewOSSServiceFromEnv() (*OSSService, error) {
 	bucketName := strings.TrimSpace(os.Getenv("OSS_BUCKET"))
 	endpoint := strings.TrimSpace(os.Getenv("OSS_ENDPOINT"))
-	//accessKeyID := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_ID"))
-	accessKeyID := "LTAI5t6eAkhCCCpKRBdwHp5q"
-	//accessKeySecret := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_SECRET"))
-	accessKeySecret := "BgUyyt84R0TDO9FiYcvixvFutd2IjA"
+	accessKeyID := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_ID"))
+	accessKeySecret := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_SECRET"))
 	publicBaseURL := strings.TrimSpace(os.Getenv("OSS_PUBLIC_BASE_URL"))
 
 	if bucketName == "" {
@@ -78,17 +73,10 @@ func NewOSSServiceFromEnv() (*OSSService, error) {
 	}, nil
 }
 
-// UploadedAttachment 是上传成功后返回给业务层的附件元数据。
 type UploadedAttachment struct {
 	Item models.AttachmentItem
 }
 
-// UploadImage 执行一次完整的图片上传流程：
-// 1. 校验大小
-// 2. 检测 MIME 类型
-// 3. 解析图片尺寸
-// 4. 上传到 OSS
-// 5. 返回前端和消息落库都能直接复用的附件结构
 func (s *OSSService) UploadImage(
 	ctx context.Context,
 	userID uint,
@@ -116,7 +104,6 @@ func (s *OSSService) UploadImage(
 		return nil, fmt.Errorf("file too large")
 	}
 
-	// 不只信任文件后缀，优先根据真实内容判断图片类型。
 	mimeType := http.DetectContentType(data)
 	if !isAllowedImageMime(mimeType) {
 		return nil, fmt.Errorf("unsupported mime type: %s", mimeType)
@@ -169,7 +156,6 @@ func decodeImageSize(data []byte) (int, int, error) {
 	return cfg.Width, cfg.Height, nil
 }
 
-// buildObjectKey 统一生成聊天附件在 OSS 中的路径。
 func buildObjectKey(userID uint, sessionID uint, originalName, mimeType string) string {
 	datePath := time.Now().Format("20060102")
 	ext := filepath.Ext(originalName)
@@ -189,7 +175,6 @@ func buildObjectKey(userID uint, sessionID uint, originalName, mimeType string) 
 	)
 }
 
-// sanitizeFilename 保留一个安全的文件名片段，避免对象路径出现特殊字符。
 func sanitizeFilename(name string) string {
 	safe := unsafeFileNameChars.ReplaceAllString(name, "-")
 	safe = strings.Trim(safe, "-")
@@ -199,7 +184,6 @@ func sanitizeFilename(name string) string {
 	return safe
 }
 
-// mimeToExt 在原文件没有扩展名时补一个默认扩展名。
 func mimeToExt(mimeType string) string {
 	switch mimeType {
 	case "image/jpeg":

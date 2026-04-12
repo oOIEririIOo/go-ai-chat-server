@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"ai-chat/config"
 	"ai-chat/models"
 	"ai-chat/service"
 	"encoding/json"
@@ -129,7 +130,11 @@ func (c *wsConnection) handleChatMessage(request *models.WebSocketChatRequest) {
 
 	log.Printf("[WebSocket] conn=%d chat start, sessionId=%d, userMessageId=%s", c.id, request.SessionID, request.UserMessageID)
 
-	dynamicAiService := service.NewAiService(request.ApiKey, request.BaseUrl, request.ModelID)
+	dynamicAiService := service.NewAiService(
+		config.FirstNonEmpty(request.ApiKey, config.GetAIAPIKey()),
+		config.FirstNonEmpty(request.BaseUrl, config.GetAIBaseURL()),
+		config.FirstNonEmpty(request.ModelID, config.GetAIModelID()),
+	)
 	chatService := service.NewChatService(c.db, dynamicAiService, nil)
 
 	userMessage, err := chatService.GetMessageByID(uint(request.SessionID), request.UserMessageID)

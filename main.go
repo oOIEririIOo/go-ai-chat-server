@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ai-chat/config"
 	"ai-chat/models"
 	"ai-chat/routes"
 	"ai-chat/service"
@@ -35,10 +36,12 @@ func main() {
 	fmt.Println("[AuthDebug] 服务启动中...")
 	DB = initDB()
 
+	config.LoadEnv()
+
 	aiService := service.NewAiService(
-		"95d464dd97d54610b132e8bdf10a3bc8.RI5F6mgZqz2nneLN",
-		"https://open.bigmodel.cn/api/paas/v4/",
-		"glm-4.7-flash",
+		config.GetAIAPIKey(),
+		config.GetAIBaseURL(),
+		config.GetAIModelID(),
 	)
 
 	ossService, err := service.NewOSSServiceFromEnv()

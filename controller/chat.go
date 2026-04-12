@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"ai-chat/config"
 	"ai-chat/middleware"
 	"ai-chat/models"
 	"ai-chat/service"
@@ -34,9 +35,9 @@ type StreamChatRequest struct {
 	SessionID uint                          `json:"session_id" binding:"required"`
 	Messages  []models.BusinessMessageInput `json:"messages" binding:"required"`
 	Tools     []models.Tool                 `json:"tools,omitempty"`
-	ModelId   string                        `json:"model_id" binding:"required"`
-	ApiKey    string                        `json:"api_key" binding:"required"`
-	BaseUrl   string                        `json:"base_url" binding:"required"`
+	ModelId   string                        `json:"model_id"`
+	ApiKey    string                        `json:"api_key"`
+	BaseUrl   string                        `json:"base_url"`
 }
 
 type GenerateTitleRequest struct {
@@ -212,7 +213,11 @@ func (c *ChatController) StreamChat(ctx *gin.Context) {
 		return
 	}
 
-	aiService := service.NewAiService(req.ApiKey, req.BaseUrl, req.ModelId)
+	aiService := service.NewAiService(
+		config.FirstNonEmpty(req.ApiKey, config.GetAIAPIKey()),
+		config.FirstNonEmpty(req.BaseUrl, config.GetAIBaseURL()),
+		config.FirstNonEmpty(req.ModelId, config.GetAIModelID()),
+	)
 	chatService := service.NewChatService(c.db, aiService, c.chatService.GetOSSService())
 	dataChan, errChan := chatService.StreamChat(req.SessionID, req.Messages, req.Tools)
 
