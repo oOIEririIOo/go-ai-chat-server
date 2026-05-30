@@ -35,6 +35,7 @@ type StreamChatRequest struct {
 	SessionID uint                          `json:"session_id" binding:"required"`
 	Messages  []models.BusinessMessageInput `json:"messages" binding:"required"`
 	Tools     []models.Tool                 `json:"tools,omitempty"`
+	ModelKey  string                        `json:"model_key"`
 	ModelId   string                        `json:"model_id"`
 	ApiKey    string                        `json:"api_key"`
 	BaseUrl   string                        `json:"base_url"`
@@ -213,11 +214,13 @@ func (c *ChatController) StreamChat(ctx *gin.Context) {
 		return
 	}
 
-	aiService := service.NewAiService(
-		config.FirstNonEmpty(req.ApiKey, config.GetAIAPIKey()),
-		config.FirstNonEmpty(req.BaseUrl, config.GetAIBaseURL()),
-		config.FirstNonEmpty(req.ModelId, config.GetAIModelID()),
-	)
+	modelCfg, err := resolveRuntimeModelConfig(req.ModelKey, req.ModelId, req.ApiKey, req.BaseUrl)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	aiService := service.NewAiService(modelCfg.ApiKey, modelCfg.BaseURL, modelCfg.ModelID)
 	chatService := service.NewChatService(c.db, aiService, c.chatService.GetOSSService())
 	dataChan, errChan := chatService.StreamChat(req.SessionID, req.Messages, req.Tools)
 
@@ -245,6 +248,22 @@ func (c *ChatController) StreamChat(ctx *gin.Context) {
 			return false
 		}
 	})
+}
+
+func resolveRuntimeModelConfig(modelKey, requestedModelID, requestedAPIKey, requestedBaseURL string) (config.ModelRuntimeConfig, error) {
+	if trimmedKey := strings.TrimSpace(modelKey); trimmedKey != "" {
+		cfg, ok := config.GetModelConfig(trimmedKey)
+		if !ok {
+			return config.ModelRuntimeConfig{}, fmt.Errorf("unsupported or incomplete model_key: %s", trimmedKey)
+		}
+		return cfg, nil
+	}
+
+	return config.ModelRuntimeConfig{
+		ApiKey:  config.FirstNonEmpty(requestedAPIKey, config.GetAIAPIKey()),
+		BaseURL: config.FirstNonEmpty(requestedBaseURL, config.GetAIBaseURL()),
+		ModelID: config.FirstNonEmpty(requestedModelID, config.GetAIModelID()),
+	}, nil
 }
 
 func (c *ChatController) DeleteSession(ctx *gin.Context) {

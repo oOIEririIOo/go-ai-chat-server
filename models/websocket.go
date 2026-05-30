@@ -7,6 +7,7 @@ type WebSocketChatRequest struct {
 	SessionID     int64                    `json:"session_id"`
 	UserMessageID string                   `json:"user_message_id"`
 	Tools         []map[string]interface{} `json:"tools"`
+	ModelKey      string                   `json:"model_key"`
 	ModelID       string                   `json:"model_id"`
 	ApiKey        string                   `json:"api_key"`
 	BaseUrl       string                   `json:"base_url"`

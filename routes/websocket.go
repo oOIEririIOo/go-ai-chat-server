@@ -130,10 +130,16 @@ func (c *wsConnection) handleChatMessage(request *models.WebSocketChatRequest) {
 
 	log.Printf("[WebSocket] conn=%d chat start, sessionId=%d, userMessageId=%s", c.id, request.SessionID, request.UserMessageID)
 
+	modelCfg, ok := resolveWebSocketModelConfig(request)
+	if !ok {
+		c.writeErrorOrDisconnect(request.SessionID, "model_key 无效或后端未配置完整模型凭据")
+		return
+	}
+
 	dynamicAiService := service.NewAiService(
-		config.FirstNonEmpty(request.ApiKey, config.GetAIAPIKey()),
-		config.FirstNonEmpty(request.BaseUrl, config.GetAIBaseURL()),
-		config.FirstNonEmpty(request.ModelID, config.GetAIModelID()),
+		modelCfg.ApiKey,
+		modelCfg.BaseURL,
+		modelCfg.ModelID,
 	)
 	chatService := service.NewChatService(c.db, dynamicAiService, nil)
 
@@ -399,4 +405,16 @@ func isExpectedWebSocketDisconnect(err error) bool {
 		strings.Contains(errMsg, "broken pipe") ||
 		strings.Contains(errMsg, "connection reset by peer") ||
 		strings.Contains(errMsg, "connection aborted")
+}
+
+func resolveWebSocketModelConfig(request *models.WebSocketChatRequest) (config.ModelRuntimeConfig, bool) {
+	if trimmedKey := strings.TrimSpace(request.ModelKey); trimmedKey != "" {
+		return config.GetModelConfig(trimmedKey)
+	}
+
+	return config.ModelRuntimeConfig{
+		ApiKey:  config.FirstNonEmpty(request.ApiKey, config.GetAIAPIKey()),
+		BaseURL: config.FirstNonEmpty(request.BaseUrl, config.GetAIBaseURL()),
+		ModelID: config.FirstNonEmpty(request.ModelID, config.GetAIModelID()),
+	}, true
 }

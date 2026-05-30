@@ -11,6 +11,19 @@ import (
 
 var loadEnvOnce sync.Once
 
+type ModelRuntimeConfig struct {
+	ApiKey  string
+	BaseURL string
+	ModelID string
+}
+
+var modelEnvPrefixes = map[string]string{
+	"qwen3.5-flash":     "MODEL_QWEN3_5_FLASH",
+	"zhipu-glm-4-flash": "MODEL_ZHIPU_GLM_4_FLASH",
+	"openai-gpt-3.5":    "MODEL_OPENAI_GPT_3_5",
+	"deepseek-chat":     "MODEL_DEEPSEEK_CHAT",
+}
+
 func LoadEnv() {
 	loadEnvOnce.Do(func() {
 		loadDotEnv(".env")
@@ -33,6 +46,25 @@ func GetAIBaseURL() string {
 func GetAIModelID() string {
 	LoadEnv()
 	return firstEnv("AI_MODEL_ID", "OPENAI_MODEL")
+}
+
+func GetModelConfig(modelKey string) (ModelRuntimeConfig, bool) {
+	LoadEnv()
+
+	prefix, ok := modelEnvPrefixes[strings.TrimSpace(modelKey)]
+	if !ok || prefix == "" {
+		return ModelRuntimeConfig{}, false
+	}
+
+	cfg := ModelRuntimeConfig{
+		ApiKey:  firstEnv(prefix + "_API_KEY"),
+		BaseURL: firstEnv(prefix + "_BASE_URL"),
+		ModelID: firstEnv(prefix + "_MODEL_ID"),
+	}
+	if cfg.ApiKey == "" || cfg.BaseURL == "" || cfg.ModelID == "" {
+		return ModelRuntimeConfig{}, false
+	}
+	return cfg, true
 }
 
 func FirstNonEmpty(values ...string) string {
