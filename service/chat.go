@@ -4,6 +4,7 @@ import (
 	"ai-chat/models"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"time"
@@ -243,6 +244,16 @@ func (s *ChatService) CreateUserMessage(
 		return nil, err
 	}
 
+	// The client-generated message ID is the idempotency key for a user message
+	// within a session. Retries should return the existing persisted message.
+	var existing models.ChatMessage
+	if err := s.db.Where("session_id = ? AND id = ?", sessionID, messageID).First(&existing).Error; err == nil {
+		dto := toChatMessageDTO(existing)
+		return &dto, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("check existing user message failed: %w", err)
+	}
+
 	now := time.Now()
 	nowText := now.Format("2006-01-02 15:04:05")
 	messageType := "text"
@@ -289,6 +300,11 @@ func (s *ChatService) CreateUserMessage(
 		return nil
 	})
 	if err != nil {
+		var existingAfterRetry models.ChatMessage
+		if queryErr := s.db.Where("session_id = ? AND id = ?", sessionID, messageID).First(&existingAfterRetry).Error; queryErr == nil {
+			dto := toChatMessageDTO(existingAfterRetry)
+			return &dto, nil
+		}
 		return nil, err
 	}
 

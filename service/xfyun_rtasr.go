@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -162,7 +163,7 @@ func (s *XFYunRTASRSession) StartReading() {
 				if errMsg == "" {
 					errMsg = "unknown xfyun rtasr error"
 				}
-				s.setError(fmt.Errorf(errMsg))
+				s.setError(errors.New(errMsg))
 				return
 			}
 

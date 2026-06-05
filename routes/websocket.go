@@ -5,6 +5,7 @@ import (
 	"ai-chat/models"
 	"ai-chat/service"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -157,11 +158,26 @@ func (c *wsConnection) handleChatMessage(request *models.WebSocketChatRequest) {
 		return
 	}
 
-	aiMsg, err := chatService.CreateAssistantPlaceholder(uint(request.SessionID), request.AIMessageID)
-	if err != nil {
-		log.Printf("[WebSocket] conn=%d session=%d create ai placeholder failed: %v", c.id, request.SessionID, err)
-		c.writeErrorOrDisconnect(request.SessionID, "创建AI消息占位失败")
+	var aiMsg *models.ChatMessage
+	var existingAIMessage models.ChatMessage
+	if err := c.db.Where("session_id = ? AND id = ?", uint(request.SessionID), request.AIMessageID).First(&existingAIMessage).Error; err == nil {
+		aiMsg = &existingAIMessage
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("[WebSocket] conn=%d session=%d load ai placeholder failed: %v", c.id, request.SessionID, err)
+		c.writeErrorOrDisconnect(request.SessionID, "读取AI消息失败")
 		return
+	} else {
+		// ai_message_id is reused across reconnects and retries to deduplicate the assistant placeholder.
+		aiMsg, err = chatService.CreateAssistantPlaceholder(uint(request.SessionID), request.AIMessageID)
+		if err != nil {
+			if reuseErr := c.db.Where("session_id = ? AND id = ?", uint(request.SessionID), request.AIMessageID).First(&existingAIMessage).Error; reuseErr == nil {
+				aiMsg = &existingAIMessage
+			} else {
+				log.Printf("[WebSocket] conn=%d session=%d create ai placeholder failed: %v", c.id, request.SessionID, err)
+				c.writeErrorOrDisconnect(request.SessionID, "创建AI消息占位失败")
+				return
+			}
+		}
 	}
 
 	tools := make([]models.Tool, 0)
